@@ -18,8 +18,39 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
+tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+hex = "0.4"
+sha2 = "0.10"
+chrono = "0.4"
+
+# Alloy - 以太坊 Rust 库（ethers-rs 的继任者）
+alloy = { version = "0.6", features = ["signer-local", "signer-mnemonic", "provider-http"] }
+
+# MAC地址获取
+mac_address = "1.1"
+
+# 随机数生成和加密
+rand = "0.8"
+base64 = "0.22"
+
+# 系统信息获取
+sysinfo = "0.32"
+
+# HTTP请求（获取公网IP）
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+
+# 浏览器打开
+opener = "0.7"
+
+# UUID 生成
+uuid = { version = "1.11", features = ["v4", "serde"] }
+
+# 剪贴板操作
+clipboard = "0.5"
+lazy_static = "1.5.0"
 

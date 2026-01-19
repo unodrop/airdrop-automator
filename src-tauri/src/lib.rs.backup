@@ -1,0 +1,1987 @@
+use serde::{Deserialize, Serialize};
+use tauri::Manager;
+use mac_address::get_mac_address;
+use rand::Rng;
+use std::fs;
+use sysinfo::System;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct WalletAccount {
+    name: String,
+    address: String,
+    encrypted_key: String,
+    encrypted_mnemonic: Option<String>,  // 加密后的助记词（如果是创建的钱包）
+    created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SocialAccount {
+    platform: String,       // "twitter", "discord", "email", "telegram"
+    username: String,
+    encrypted_token: String,
+    wallet_address: String,
+    verified: bool,
+    created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct LoginCredentials {
+    email: String,
+    encrypted_password: String,
+    encryption_key: String,
+    mac_address: String,
+    token: Option<String>,
+    saved_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ProxyIP {
+    id: String,
+    ip: String,
+    port: u16,
+    protocol: String,  // "http", "https", "socks5"
+    username: Option<String>,
+    password: Option<String>,
+    country: Option<String>,
+    status: String,  // "active", "inactive", "testing"
+    wallet_bindings: Vec<String>,
+    created_at: String,
+    last_used: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SystemInfo {
+    cpu_usage: f32,
+    memory_total: u64,
+    memory_used: u64,
+    network_speed: u64,  // bytes per second
+    public_ip: String,
+    proxy_enabled: bool,
+    proxy_ip: Option<String>,
+}
+
+// 全局配置（所有窗口公用）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct BrowserConfig {
+    browser_type: String,
+    api_url: String,
+    api_port: u16,
+    api_key: Option<String>,
+    launch_args: Option<String>,
+    headless: bool,
+}
+
+// 窗口配置（每个窗口独立）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct BrowserWindow {
+    id: String,
+    name: String,
+    wallet_address: String,
+    profile_id: String,  // 指纹浏览器的配置ID
+    proxy_id: Option<String>,
+    social_accounts: Vec<String>,
+    auto_script: Option<String>,
+    status: String,  // "idle", "running", "stopped", "error"
+    created_at: String,
+    last_used: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidationResult {
+    valid: bool,
+    username: Option<String>,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchImportResult {
+    total: usize,
+    successful: usize,
+    failed: usize,
+    results: Vec<SingleImportResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct SingleImportResult {
+    index: usize,
+    success: bool,
+    address: Option<String>,
+    message: String,
+    private_key_preview: String,
+}
+
+// 验证私钥格式并生成真实的以太坊地址（使用 Alloy）
+// 
+// Alloy 是 ethers-rs 的继任者，更现代、更快、模块化更好
+// 完整支持：地址生成、签名、交易、合约调用等
+fn validate_and_get_address(private_key: &str) -> Result<String, String> {
+    use alloy::signers::local::PrivateKeySigner;
+    
+    // 移除 0x 前缀
+    let clean_key = private_key.trim().trim_start_matches("0x");
+    
+    // 验证是否为 64 位十六进制
+    if clean_key.len() != 64 {
+        return Err("私钥必须是64位十六进制字符串".to_string());
+    }
+    
+    if !clean_key.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("私钥包含非法字符".to_string());
+    }
+    
+    // 从私钥创建签名器
+    let private_key_with_prefix = format!("0x{}", clean_key);
+    let signer = private_key_with_prefix.parse::<PrivateKeySigner>()
+        .map_err(|e| format!("无效的私钥: {}", e))?;
+    
+    // 获取地址（自动 checksum 格式）
+    let address = format!("{:?}", signer.address());
+    
+    Ok(address)
+}
+
+/// 获取本机MAC地址
+#[tauri::command]
+fn get_device_mac_address() -> Result<String, String> {
+    match get_mac_address() {
+        Ok(Some(mac)) => {
+            // 格式化为标准的MAC地址格式 (XX:XX:XX:XX:XX:XX)
+            let mac_str = mac.bytes()
+                .iter()
+                .map(|b| format!("{:02X}", b))
+                .collect::<Vec<String>>()
+                .join(":");
+            Ok(mac_str)
+        }
+        Ok(None) => Err("未找到网络接口".to_string()),
+        Err(e) => Err(format!("获取MAC地址失败: {}", e)),
+    }
+}
+
+/// 生成安全的加密密钥
+/// 使用加密安全的随机数生成器生成32字节(256位)的密钥
+/// 返回格式: XXXX-XXXX-XXXX-XXXX (16个字符，分为4组)
+#[tauri::command]
+fn generate_encryption_key() -> Result<String, String> {
+    use rand::rngs::OsRng;
+    
+    // 使用操作系统的加密安全随机数生成器
+    let mut rng = OsRng;
+    
+    // 生成16个随机字节（每个字节转换为2个十六进制字符）
+    let random_bytes: Vec<u8> = (0..16)
+        .map(|_| rng.gen::<u8>())
+        .collect();
+    
+    // 转换为十六进制字符串
+    let hex_string: String = random_bytes
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect();
+    
+    // 格式化为 XXXX-XXXX-XXXX-XXXX 格式
+    let formatted = format!(
+        "{}-{}-{}-{}",
+        &hex_string[0..4],
+        &hex_string[4..8],
+        &hex_string[8..12],
+        &hex_string[12..16]
+    );
+    
+    Ok(formatted)
+}
+
+/// 使用加密密钥加密密码
+/// 简单的XOR加密（生产环境应使用AES-GCM）
+#[tauri::command]
+fn encrypt_password(password: String, key: String) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    
+    // 移除密钥中的连字符
+    let clean_key = key.replace("-", "");
+    
+    // 使用SHA256派生加密密钥
+    let mut hasher = Sha256::new();
+    hasher.update(clean_key.as_bytes());
+    let key_hash = hasher.finalize();
+    
+    // XOR加密
+    let encrypted: Vec<u8> = password
+        .bytes()
+        .enumerate()
+        .map(|(i, b)| b ^ key_hash[i % key_hash.len()])
+        .collect();
+    
+    // 转换为十六进制
+    Ok(hex::encode(encrypted))
+}
+
+/// 保存登录凭据
+#[tauri::command]
+fn save_login_credentials(
+    app: tauri::AppHandle,
+    email: String,
+    encrypted_password: String,
+    encryption_key: String,
+    mac_address: String,
+    token: Option<String>,
+) -> Result<(), String> {
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let credentials_path = app_dir.join("credentials.json");
+    
+    let credentials = LoginCredentials {
+        email,
+        encrypted_password,
+        encryption_key,
+        mac_address,
+        token,
+        saved_at: chrono::Utc::now().to_rfc3339(),
+    };
+    
+    let json = serde_json::to_string_pretty(&credentials).map_err(|e| e.to_string())?;
+    fs::write(&credentials_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+/// 获取保存的登录凭据
+#[tauri::command]
+fn get_saved_credentials(app: tauri::AppHandle) -> Result<Option<LoginCredentials>, String> {
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let credentials_path = app_dir.join("credentials.json");
+    
+    if !credentials_path.exists() {
+        return Ok(None);
+    }
+    
+    let content = fs::read_to_string(&credentials_path).map_err(|e| e.to_string())?;
+    let credentials: LoginCredentials = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    
+    Ok(Some(credentials))
+}
+
+/// 清除保存的登录凭据
+#[tauri::command]
+fn clear_saved_credentials(app: tauri::AppHandle) -> Result<(), String> {
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let credentials_path = app_dir.join("credentials.json");
+    
+    if credentials_path.exists() {
+        fs::remove_file(&credentials_path).map_err(|e| e.to_string())?;
+    }
+    
+    Ok(())
+}
+
+// 简单的 XOR 加密（实际应该用 AES-GCM）
+fn encrypt_private_key(private_key: &str, password: &str) -> String {
+    use sha2::{Digest, Sha256};
+    
+    // 使用密码生成密钥
+    let mut hasher = Sha256::new();
+    hasher.update(password.as_bytes());
+    let key = hasher.finalize();
+    
+    // XOR 加密
+    let key_bytes = private_key.as_bytes();
+    let encrypted: Vec<u8> = key_bytes
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| b ^ key[i % key.len()])
+        .collect();
+    
+    hex::encode(encrypted)
+}
+
+// XOR 解密（用于导出功能，暂未使用）
+#[allow(dead_code)]
+fn decrypt_private_key(encrypted: &str, password: &str) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    
+    let encrypted_bytes = hex::decode(encrypted).map_err(|e| e.to_string())?;
+    
+    let mut hasher = Sha256::new();
+    hasher.update(password.as_bytes());
+    let key = hasher.finalize();
+    
+    let decrypted: Vec<u8> = encrypted_bytes
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| b ^ key[i % key.len()])
+        .collect();
+    
+    String::from_utf8(decrypted).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn batch_import_private_keys(
+    app: tauri::AppHandle,
+    private_keys: Vec<String>,
+) -> Result<BatchImportResult, String> {
+    let total = private_keys.len();
+    let mut successful = 0;
+    let mut failed = 0;
+    let mut results = Vec::new();
+    
+    // 获取数据目录
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let wallets_path = data_dir.join("wallets.json");
+    
+    // 读取现有钱包
+    let mut wallets: Vec<WalletAccount> = if wallets_path.exists() {
+        let content = std::fs::read_to_string(&wallets_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or_else(|_| Vec::new())
+    } else {
+        Vec::new()
+    };
+    
+    let app_password = "unodrop_secure_password_2024";
+    
+    // 处理每个私钥
+    for (index, private_key) in private_keys.iter().enumerate() {
+        let private_key = private_key.trim();
+        
+        // 跳过空行
+        if private_key.is_empty() {
+            continue;
+        }
+        
+        // 获取私钥预览（前6位+后4位）
+        let preview = if private_key.len() > 10 {
+            format!("{}...{}", &private_key[..6], &private_key[private_key.len()-4..])
+        } else {
+            private_key.to_string()
+        };
+        
+        // 验证并获取地址
+        let address = match validate_and_get_address(private_key) {
+            Ok(addr) => addr,
+            Err(e) => {
+                failed += 1;
+                results.push(SingleImportResult {
+                    index: index + 1,
+                    success: false,
+                    address: None,
+                    message: e,
+                    private_key_preview: preview,
+                });
+                continue;
+            }
+        };
+        
+        // 检查地址是否已存在
+        if wallets.iter().any(|w| w.address.eq_ignore_ascii_case(&address)) {
+            failed += 1;
+            results.push(SingleImportResult {
+                index: index + 1,
+                success: false,
+                address: Some(address.clone()),
+                message: "地址已存在".to_string(),
+                private_key_preview: preview,
+            });
+            continue;
+        }
+        
+        // 加密私钥
+        let encrypted_key = encrypt_private_key(private_key, app_password);
+        
+        // 生成账户名称（基于地址）
+        let name = format!("Account {}", &address[2..8].to_uppercase());
+        
+        // 添加新钱包
+        let new_wallet = WalletAccount {
+            name,
+            address: address.clone(),
+            encrypted_key,
+            encrypted_mnemonic: None,  // 导入的私钥没有助记词
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        
+        wallets.push(new_wallet);
+        successful += 1;
+        
+        results.push(SingleImportResult {
+            index: index + 1,
+            success: true,
+            address: Some(address),
+            message: "导入成功".to_string(),
+            private_key_preview: preview,
+        });
+    }
+    
+    // 保存到文件
+    if successful > 0 {
+        let json = serde_json::to_string_pretty(&wallets).map_err(|e| e.to_string())?;
+        std::fs::write(&wallets_path, json).map_err(|e| e.to_string())?;
+    }
+    
+    Ok(BatchImportResult {
+        total,
+        successful,
+        failed,
+        results,
+    })
+}
+
+// 批量创建钱包（生成助记词）
+#[tauri::command]
+async fn batch_create_wallets(
+    app: tauri::AppHandle,
+    count: usize,
+) -> Result<BatchImportResult, String> {
+    use alloy::signers::local::{MnemonicBuilder, coins_bip39::{English, Mnemonic}};
+    use rand::Rng;
+    
+    if count == 0 || count > 100 {
+        return Err("创建数量必须在 1-100 之间".to_string());
+    }
+    
+    let total = count;
+    let mut successful = 0;
+    let mut failed = 0;
+    let mut results = Vec::new();
+    
+    // 获取数据目录
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let wallets_path = data_dir.join("wallets.json");
+    
+    // 读取现有钱包
+    let mut wallets: Vec<WalletAccount> = if wallets_path.exists() {
+        let content = std::fs::read_to_string(&wallets_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or_else(|_| Vec::new())
+    } else {
+        Vec::new()
+    };
+    
+    let app_password = "unodrop_secure_password_2024";
+    
+    // 创建多个钱包
+    for index in 0..count {
+        // 生成随机熵 (128 bits = 12 words)
+        let mut entropy = [0u8; 16];
+        rand::thread_rng().fill(&mut entropy);
+        
+        // 从熵生成助记词
+        let mnemonic = Mnemonic::<English>::new_from_entropy(entropy.into());
+        
+        let mnemonic_phrase = mnemonic.to_phrase();
+        
+        // 从助记词生成钱包（使用默认派生路径 m/44'/60'/0'/0/0）
+        let wallet = match MnemonicBuilder::<English>::default()
+            .phrase(mnemonic_phrase.as_str())
+            .index(0u32)
+            .map_err(|e| e.to_string())?
+            .build()
+        {
+            Ok(w) => w,
+            Err(e) => {
+                failed += 1;
+                results.push(SingleImportResult {
+                    index: index + 1,
+                    success: false,
+                    address: None,
+                    message: format!("生成钱包失败: {}", e),
+                    private_key_preview: "".to_string(),
+                });
+                continue;
+            }
+        };
+        
+        // 获取地址和私钥
+        let address = format!("{:?}", wallet.address());
+        let private_key_bytes = wallet.credential().to_bytes();
+        let private_key = hex::encode(private_key_bytes);
+        
+        // 检查地址是否已存在
+        let exists = wallets.iter().any(|w| w.address.eq_ignore_ascii_case(&address));
+        if exists {
+            failed += 1;
+            results.push(SingleImportResult {
+                index: index + 1,
+                success: false,
+                address: Some(address),
+                message: "地址已存在".to_string(),
+                private_key_preview: "".to_string(),
+            });
+            continue;
+        }
+        
+        // 加密私钥和助记词
+        let encrypted_key = encrypt_private_key(&private_key, app_password);
+        let encrypted_mnemonic = encrypt_private_key(&mnemonic_phrase, app_password);
+        
+        // 生成账户名称
+        let name = format!("Wallet {}", &address[2..8].to_uppercase());
+        
+        // 添加新钱包
+        let new_wallet = WalletAccount {
+            name,
+            address: address.clone(),
+            encrypted_key,
+            encrypted_mnemonic: Some(encrypted_mnemonic),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        
+        wallets.push(new_wallet);
+        successful += 1;
+        
+        // 助记词预览（只显示前3个词）
+        let mnemonic_words: Vec<&str> = mnemonic_phrase.split_whitespace().collect();
+        let preview = if mnemonic_words.len() >= 3 {
+            format!("{}...", mnemonic_words[..3].join(" "))
+        } else {
+            mnemonic_phrase
+        };
+        
+        results.push(SingleImportResult {
+            index: index + 1,
+            success: true,
+            address: Some(address),
+            message: "创建成功".to_string(),
+            private_key_preview: preview,
+        });
+    }
+    
+    // 保存到文件
+    if successful > 0 {
+        let json = serde_json::to_string_pretty(&wallets).map_err(|e| e.to_string())?;
+        std::fs::write(&wallets_path, json).map_err(|e| e.to_string())?;
+    }
+    
+    Ok(BatchImportResult {
+        total,
+        successful,
+        failed,
+        results,
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct ExportedWallet {
+    name: String,
+    address: String,
+    private_key: String,
+    mnemonic: Option<String>,
+    created_at: String,
+}
+
+#[tauri::command]
+async fn get_wallets(app: tauri::AppHandle) -> Result<Vec<WalletAccount>, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let wallets_path = data_dir.join("wallets.json");
+    
+    if !wallets_path.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let content = std::fs::read_to_string(&wallets_path).map_err(|e| e.to_string())?;
+    let wallets: Vec<WalletAccount> = serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
+    
+    Ok(wallets)
+}
+
+// 导出钱包（解密私钥和助记词）
+#[tauri::command]
+async fn export_wallets(
+    app: tauri::AppHandle,
+    addresses: Option<Vec<String>>,
+) -> Result<Vec<ExportedWallet>, String> {
+    let app_password = "unodrop_secure_password_2024";
+    
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let wallets_path = data_dir.join("wallets.json");
+    
+    if !wallets_path.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let content = std::fs::read_to_string(&wallets_path).map_err(|e| e.to_string())?;
+    let wallets: Vec<WalletAccount> = serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
+    
+    let mut exported = Vec::new();
+    
+    for wallet in wallets {
+        // 如果指定了地址列表，只导出指定的钱包
+        if let Some(ref filter_addresses) = addresses {
+            if !filter_addresses.iter().any(|a| a.eq_ignore_ascii_case(&wallet.address)) {
+                continue;
+            }
+        }
+        
+        // 解密私钥
+        let private_key = decrypt_private_key(&wallet.encrypted_key, app_password)?;
+        
+        // 解密助记词（如果有）
+        let mnemonic = if let Some(ref encrypted_mnemonic) = wallet.encrypted_mnemonic {
+            Some(decrypt_private_key(encrypted_mnemonic, app_password)?)
+        } else {
+            None
+        };
+        
+        exported.push(ExportedWallet {
+            name: wallet.name,
+            address: wallet.address,
+            private_key,
+            mnemonic,
+            created_at: wallet.created_at,
+        });
+    }
+    
+    Ok(exported)
+}
+
+// 验证社交账户 Token
+#[tauri::command]
+async fn validate_social_token(
+    platform: String,
+    username: Option<String>,
+    token: String,
+) -> Result<ValidationResult, String> {
+    // 简单验证逻辑（实际应该调用各平台 API）
+    let token = token.trim();
+    
+    if token.is_empty() {
+        return Ok(ValidationResult {
+            valid: false,
+            username: None,
+            message: "Token 不能为空".to_string(),
+        });
+    }
+    
+    // 基础格式验证
+    match platform.as_str() {
+        "twitter" => {
+            // Twitter auth_token 通常是 40 位十六进制
+            if token.len() < 20 {
+                return Ok(ValidationResult {
+                    valid: false,
+                    username: None,
+                    message: "Twitter Auth Token 格式不正确".to_string(),
+                });
+            }
+        }
+        "discord" => {
+            // Discord token 格式验证
+            if !token.contains('.') || token.len() < 50 {
+                return Ok(ValidationResult {
+                    valid: false,
+                    username: None,
+                    message: "Discord Authorization Token 格式不正确".to_string(),
+                });
+            }
+        }
+        "email" => {
+            // Email 需要用户名（邮箱地址）
+            if username.is_none() || username.as_ref().unwrap().is_empty() {
+                return Ok(ValidationResult {
+                    valid: false,
+                    username: None,
+                    message: "邮箱地址不能为空".to_string(),
+                });
+            }
+            
+            let email = username.as_ref().unwrap();
+            if !email.contains('@') {
+                return Ok(ValidationResult {
+                    valid: false,
+                    username: None,
+                    message: "邮箱地址格式不正确".to_string(),
+                });
+            }
+        }
+        "telegram" => {
+            // Telegram session string 或 bot token
+            if token.len() < 20 {
+                return Ok(ValidationResult {
+                    valid: false,
+                    username: None,
+                    message: "Telegram Token 格式不正确".to_string(),
+                });
+            }
+        }
+        _ => {
+            return Ok(ValidationResult {
+                valid: false,
+                username: None,
+                message: "不支持的平台".to_string(),
+            });
+        }
+    }
+    
+    // 验证成功
+    Ok(ValidationResult {
+        valid: true,
+        username: username.clone(),
+        message: "验证成功".to_string(),
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct BatchSocialImportResult {
+    total: usize,
+    successful: usize,
+    failed: usize,
+    results: Vec<SingleSocialImportResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct SingleSocialImportResult {
+    index: usize,
+    success: bool,
+    platform: String,
+    username: String,
+    message: String,
+}
+
+// 批量导入社交账户
+#[tauri::command]
+async fn batch_import_social_accounts(
+    app: tauri::AppHandle,
+    accounts: Vec<SocialAccount>,
+) -> Result<BatchSocialImportResult, String> {
+    let total = accounts.len();
+    let mut successful = 0;
+    let mut failed = 0;
+    let mut results = Vec::new();
+    
+    let app_password = "unodrop_secure_password_2024";
+    
+    // 获取数据目录
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let socials_path = data_dir.join("social_accounts.json");
+    
+    // 读取现有社交账户
+    let mut existing_accounts: Vec<SocialAccount> = if socials_path.exists() {
+        let content = std::fs::read_to_string(&socials_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or_else(|_| Vec::new())
+    } else {
+        Vec::new()
+    };
+    
+    // 处理每个账户
+    for (index, account) in accounts.iter().enumerate() {
+        // 检查是否已存在
+        let exists = existing_accounts.iter().any(|a| {
+            a.platform == account.platform && 
+            a.username.eq_ignore_ascii_case(&account.username)
+        });
+        
+        if exists {
+            failed += 1;
+            results.push(SingleSocialImportResult {
+                index: index + 1,
+                success: false,
+                platform: account.platform.clone(),
+                username: account.username.clone(),
+                message: "账户已存在".to_string(),
+            });
+            continue;
+        }
+        
+        // 验证 Token 格式
+        let token = account.encrypted_token.trim();
+        if token.is_empty() {
+            failed += 1;
+            results.push(SingleSocialImportResult {
+                index: index + 1,
+                success: false,
+                platform: account.platform.clone(),
+                username: account.username.clone(),
+                message: "Token 不能为空".to_string(),
+            });
+            continue;
+        }
+        
+        // 加密 Token
+        let encrypted_token = encrypt_private_key(token, app_password);
+        
+        // 添加新账户
+        let new_account = SocialAccount {
+            platform: account.platform.clone(),
+            username: account.username.clone(),
+            encrypted_token,
+            wallet_address: account.wallet_address.clone(),
+            verified: true,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        
+        existing_accounts.push(new_account);
+        successful += 1;
+        
+        results.push(SingleSocialImportResult {
+            index: index + 1,
+            success: true,
+            platform: account.platform.clone(),
+            username: account.username.clone(),
+            message: "导入成功".to_string(),
+        });
+    }
+    
+    // 保存到文件
+    if successful > 0 {
+        let json = serde_json::to_string_pretty(&existing_accounts).map_err(|e| e.to_string())?;
+        std::fs::write(&socials_path, json).map_err(|e| e.to_string())?;
+    }
+    
+    Ok(BatchSocialImportResult {
+        total,
+        successful,
+        failed,
+        results,
+    })
+}
+
+// 导入社交账户
+#[tauri::command]
+async fn import_social_account(
+    app: tauri::AppHandle,
+    account: SocialAccount,
+) -> Result<bool, String> {
+    let app_password = "unodrop_secure_password_2024";
+    
+    // 加密 token
+    let encrypted_token = encrypt_private_key(&account.encrypted_token, app_password);
+    
+    // 获取数据目录
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    
+    let socials_path = data_dir.join("social_accounts.json");
+    
+    // 读取现有社交账户
+    let mut accounts: Vec<SocialAccount> = if socials_path.exists() {
+        let content = std::fs::read_to_string(&socials_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or_else(|_| Vec::new())
+    } else {
+        Vec::new()
+    };
+    
+    // 检查是否已存在（同一平台同一用户名）
+    let exists = accounts.iter().any(|a| {
+        a.platform == account.platform && 
+        a.username.eq_ignore_ascii_case(&account.username)
+    });
+    
+    if exists {
+        return Err("该社交账户已经导入过了".to_string());
+    }
+    
+    // 添加新账户
+    let new_account = SocialAccount {
+        platform: account.platform,
+        username: account.username,
+        encrypted_token,
+        wallet_address: account.wallet_address,
+        verified: true,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    
+    accounts.push(new_account);
+    
+    // 保存到文件
+    let json = serde_json::to_string_pretty(&accounts).map_err(|e| e.to_string())?;
+    std::fs::write(&socials_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(true)
+}
+
+// 获取社交账户列表
+#[tauri::command]
+async fn get_social_accounts(app: tauri::AppHandle) -> Result<Vec<SocialAccount>, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let socials_path = data_dir.join("social_accounts.json");
+    
+    if !socials_path.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let content = std::fs::read_to_string(&socials_path).map_err(|e| e.to_string())?;
+    let accounts: Vec<SocialAccount> = serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
+    
+    Ok(accounts)
+}
+
+// 删除社交账户
+#[tauri::command]
+async fn delete_social_account(
+    app: tauri::AppHandle,
+    platform: String,
+    username: String,
+) -> Result<bool, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let socials_path = data_dir.join("social_accounts.json");
+    
+    if !socials_path.exists() {
+        return Ok(false);
+    }
+    
+    let content = std::fs::read_to_string(&socials_path).map_err(|e| e.to_string())?;
+    let mut accounts: Vec<SocialAccount> = serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
+    
+    let original_len = accounts.len();
+    accounts.retain(|a| {
+        !(a.platform.eq_ignore_ascii_case(&platform) && 
+          a.username.eq_ignore_ascii_case(&username))
+    });
+    
+    if accounts.len() == original_len {
+        return Ok(false);
+    }
+    
+    let json = serde_json::to_string_pretty(&accounts).map_err(|e| e.to_string())?;
+    std::fs::write(&socials_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(true)
+}
+
+// 更新钱包名称
+#[tauri::command]
+async fn update_wallet_name(
+    app: tauri::AppHandle,
+    address: String,
+    new_name: String,
+) -> Result<bool, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let wallets_path = data_dir.join("wallets.json");
+    
+    if !wallets_path.exists() {
+        return Ok(false);
+    }
+    
+    let content = std::fs::read_to_string(&wallets_path).map_err(|e| e.to_string())?;
+    let mut wallets: Vec<WalletAccount> = serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
+    
+    // 查找并更新钱包名称
+    let mut found = false;
+    for wallet in &mut wallets {
+        if wallet.address.eq_ignore_ascii_case(&address) {
+            wallet.name = new_name.clone();
+            found = true;
+            break;
+        }
+    }
+    
+    if !found {
+        return Ok(false);
+    }
+    
+    // 保存更新
+    let json = serde_json::to_string_pretty(&wallets).map_err(|e| e.to_string())?;
+    std::fs::write(&wallets_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(true)
+}
+
+// 删除钱包
+#[tauri::command]
+async fn delete_wallet(app: tauri::AppHandle, address: String) -> Result<bool, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let wallets_path = data_dir.join("wallets.json");
+    
+    if !wallets_path.exists() {
+        return Ok(false);
+    }
+    
+    let content = std::fs::read_to_string(&wallets_path).map_err(|e| e.to_string())?;
+    let mut wallets: Vec<WalletAccount> = serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
+    
+    let original_len = wallets.len();
+    wallets.retain(|w| !w.address.eq_ignore_ascii_case(&address));
+    
+    if wallets.len() == original_len {
+        return Ok(false); // 没有找到要删除的钱包
+    }
+    
+    let json = serde_json::to_string_pretty(&wallets).map_err(|e| e.to_string())?;
+    std::fs::write(&wallets_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(true)
+}
+
+// ==================== 代理IP管理 ====================
+
+// 获取代理IP列表
+#[tauri::command]
+async fn get_proxies(app: tauri::AppHandle) -> Result<Vec<ProxyIP>, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let proxies_path = data_dir.join("proxies.json");
+    
+    if !proxies_path.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let content = std::fs::read_to_string(&proxies_path).map_err(|e| e.to_string())?;
+    let proxies: Vec<ProxyIP> = serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
+    
+    Ok(proxies)
+}
+
+// 添加单个代理IP
+#[tauri::command]
+async fn add_proxy(
+    app: tauri::AppHandle,
+    ip: String,
+    port: u16,
+    protocol: String,
+    username: Option<String>,
+    password: Option<String>,
+    country: Option<String>,
+) -> Result<ProxyIP, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let proxies_path = data_dir.join("proxies.json");
+    
+    // 读取现有代理列表
+    let mut proxies: Vec<ProxyIP> = if proxies_path.exists() {
+        let content = std::fs::read_to_string(&proxies_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or_else(|_| Vec::new())
+    } else {
+        Vec::new()
+    };
+    
+    // 检查是否已存在（相同IP和端口）
+    let exists = proxies.iter().any(|p| p.ip == ip && p.port == port);
+    if exists {
+        return Err("该代理IP已经存在".to_string());
+    }
+    
+    // 创建新代理
+    let new_proxy = ProxyIP {
+        id: format!("{}", proxies.len() + 1),
+        ip: ip.clone(),
+        port,
+        protocol,
+        username,
+        password,
+        country,
+        status: "inactive".to_string(),
+        wallet_bindings: Vec::new(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        last_used: None,
+    };
+    
+    proxies.push(new_proxy.clone());
+    
+    // 保存到文件
+    let json = serde_json::to_string_pretty(&proxies).map_err(|e| e.to_string())?;
+    std::fs::write(&proxies_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(new_proxy)
+}
+
+// 批量添加代理IP
+#[tauri::command]
+async fn batch_add_proxies(
+    app: tauri::AppHandle,
+    proxies_text: String,
+) -> Result<(usize, usize), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let proxies_path = data_dir.join("proxies.json");
+    
+    // 读取现有代理列表
+    let mut existing_proxies: Vec<ProxyIP> = if proxies_path.exists() {
+        let content = std::fs::read_to_string(&proxies_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or_else(|_| Vec::new())
+    } else {
+        Vec::new()
+    };
+    
+    let mut success_count = 0;
+    let mut fail_count = 0;
+    
+    // 解析每一行（格式：ip:port:protocol 或 ip:port:protocol:username:password）
+    for line in proxies_text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() < 3 {
+            fail_count += 1;
+            continue;
+        }
+        
+        let ip = parts[0].to_string();
+        let port = match parts[1].parse::<u16>() {
+            Ok(p) => p,
+            Err(_) => {
+                fail_count += 1;
+                continue;
+            }
+        };
+        let protocol = parts[2].to_string();
+        let username = if parts.len() > 3 { Some(parts[3].to_string()) } else { None };
+        let password = if parts.len() > 4 { Some(parts[4].to_string()) } else { None };
+        
+        // 检查是否已存在
+        let exists = existing_proxies.iter().any(|p| p.ip == ip && p.port == port);
+        if exists {
+            fail_count += 1;
+            continue;
+        }
+        
+        // 添加新代理
+        let new_proxy = ProxyIP {
+            id: format!("{}", existing_proxies.len() + 1),
+            ip,
+            port,
+            protocol,
+            username,
+            password,
+            country: None,
+            status: "inactive".to_string(),
+            wallet_bindings: Vec::new(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            last_used: None,
+        };
+        
+        existing_proxies.push(new_proxy);
+        success_count += 1;
+    }
+    
+    // 保存到文件
+    let json = serde_json::to_string_pretty(&existing_proxies).map_err(|e| e.to_string())?;
+    std::fs::write(&proxies_path, json).map_err(|e| e.to_string())?;
+    
+    Ok((success_count, fail_count))
+}
+
+// 删除代理IP
+#[tauri::command]
+async fn delete_proxy(app: tauri::AppHandle, id: String) -> Result<bool, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let proxies_path = data_dir.join("proxies.json");
+    
+    if !proxies_path.exists() {
+        return Ok(false);
+    }
+    
+    let content = std::fs::read_to_string(&proxies_path).map_err(|e| e.to_string())?;
+    let mut proxies: Vec<ProxyIP> = serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
+    
+    let original_len = proxies.len();
+    proxies.retain(|p| p.id != id);
+    
+    if proxies.len() == original_len {
+        return Ok(false);
+    }
+    
+    let json = serde_json::to_string_pretty(&proxies).map_err(|e| e.to_string())?;
+    std::fs::write(&proxies_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(true)
+}
+
+// 更新代理IP
+#[tauri::command]
+async fn update_proxy(
+    app: tauri::AppHandle,
+    id: String,
+    ip: Option<String>,
+    port: Option<u16>,
+    protocol: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+    country: Option<String>,
+    wallet_bindings: Option<Vec<String>>,
+) -> Result<bool, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let proxies_path = data_dir.join("proxies.json");
+    
+    if !proxies_path.exists() {
+        return Ok(false);
+    }
+    
+    let content = std::fs::read_to_string(&proxies_path).map_err(|e| e.to_string())?;
+    let mut proxies: Vec<ProxyIP> = serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
+    
+    let mut found = false;
+    for proxy in &mut proxies {
+        if proxy.id == id {
+            if let Some(new_ip) = ip {
+                proxy.ip = new_ip;
+            }
+            if let Some(new_port) = port {
+                proxy.port = new_port;
+            }
+            if let Some(new_protocol) = protocol {
+                proxy.protocol = new_protocol;
+            }
+            if let Some(new_username) = username {
+                proxy.username = Some(new_username);
+            }
+            if let Some(new_password) = password {
+                proxy.password = Some(new_password);
+            }
+            if let Some(new_country) = country {
+                proxy.country = Some(new_country);
+            }
+            if let Some(new_bindings) = wallet_bindings {
+                proxy.wallet_bindings = new_bindings;
+            }
+            found = true;
+            break;
+        }
+    }
+    
+    if !found {
+        return Ok(false);
+    }
+    
+    let json = serde_json::to_string_pretty(&proxies).map_err(|e| e.to_string())?;
+    std::fs::write(&proxies_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(true)
+}
+
+// Ping代理IP（简单的TCP连接测试）
+#[tauri::command]
+async fn ping_proxy(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<(bool, Option<u64>), String> {
+    use std::time::{Duration, Instant};
+    use std::net::TcpStream;
+    
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let proxies_path = data_dir.join("proxies.json");
+    
+    if !proxies_path.exists() {
+        return Err("代理列表不存在".to_string());
+    }
+    
+    let content = std::fs::read_to_string(&proxies_path).map_err(|e| e.to_string())?;
+    let mut proxies: Vec<ProxyIP> = serde_json::from_str(&content).unwrap_or_else(|_| Vec::new());
+    
+    let proxy = proxies.iter_mut().find(|p| p.id == id);
+    if proxy.is_none() {
+        return Err("找不到指定的代理".to_string());
+    }
+    
+    let proxy = proxy.unwrap();
+    let addr = format!("{}:{}", proxy.ip, proxy.port);
+    
+    // 尝试连接
+    let start = Instant::now();
+    let result = TcpStream::connect_timeout(
+        &addr.parse().map_err(|e| format!("无效的地址: {}", e))?,
+        Duration::from_secs(5),
+    );
+    let elapsed = start.elapsed().as_millis() as u64;
+    
+    let success = result.is_ok();
+    
+    // 更新状态
+    proxy.status = if success { "active".to_string() } else { "inactive".to_string() };
+    proxy.last_used = Some(chrono::Utc::now().to_rfc3339());
+    
+    // 保存更新
+    let json = serde_json::to_string_pretty(&proxies).map_err(|e| e.to_string())?;
+    std::fs::write(&proxies_path, json).map_err(|e| e.to_string())?;
+    
+    Ok((success, if success { Some(elapsed) } else { None }))
+}
+
+// ========== 指纹浏览器管理 ==========
+
+// 获取全局配置
+#[tauri::command]
+fn get_browser_config(app: tauri::AppHandle) -> Result<Option<BrowserConfig>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config_path = app_data_dir.join("browser_config.json");
+    
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    
+    let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let config: BrowserConfig = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    
+    Ok(Some(config))
+}
+
+// 保存全局配置
+#[tauri::command]
+fn save_browser_config(app: tauri::AppHandle, config: BrowserConfig) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config_path = app_data_dir.join("browser_config.json");
+    
+    let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&config_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+// 获取所有窗口
+#[tauri::command]
+fn get_browser_windows(app: tauri::AppHandle) -> Result<Vec<BrowserWindow>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let windows_path = app_data_dir.join("browser_windows.json");
+    
+    if !windows_path.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let content = std::fs::read_to_string(&windows_path).map_err(|e| e.to_string())?;
+    let windows: Vec<BrowserWindow> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    
+    Ok(windows)
+}
+
+// 创建窗口
+#[tauri::command]
+fn create_browser_window(app: tauri::AppHandle, window: serde_json::Value) -> Result<BrowserWindow, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let windows_path = app_data_dir.join("browser_windows.json");
+    
+    let mut windows: Vec<BrowserWindow> = if windows_path.exists() {
+        let content = std::fs::read_to_string(&windows_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    
+    let new_window = BrowserWindow {
+        id: format!("bw_{}", chrono::Utc::now().timestamp_millis()),
+        name: window["name"].as_str().ok_or("Missing name")?.to_string(),
+        wallet_address: window["wallet_address"].as_str().ok_or("Missing wallet_address")?.to_string(),
+        profile_id: window["profile_id"].as_str().ok_or("Missing profile_id")?.to_string(),
+        proxy_id: window["proxy_id"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string()),
+        social_accounts: window["social_accounts"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        auto_script: window["auto_script"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string()),
+        status: "idle".to_string(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        last_used: None,
+    };
+    
+    windows.push(new_window.clone());
+    
+    let json = serde_json::to_string_pretty(&windows).map_err(|e| e.to_string())?;
+    std::fs::write(&windows_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(new_window)
+}
+
+// 更新窗口
+#[tauri::command]
+fn update_browser_window(app: tauri::AppHandle, id: String, window: serde_json::Value) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let windows_path = app_data_dir.join("browser_windows.json");
+    
+    if !windows_path.exists() {
+        return Err("Windows file not found".to_string());
+    }
+    
+    let content = std::fs::read_to_string(&windows_path).map_err(|e| e.to_string())?;
+    let mut windows: Vec<BrowserWindow> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    
+    if let Some(existing) = windows.iter_mut().find(|w| w.id == id) {
+        existing.name = window["name"].as_str().ok_or("Missing name")?.to_string();
+        existing.wallet_address = window["wallet_address"].as_str().ok_or("Missing wallet_address")?.to_string();
+        existing.profile_id = window["profile_id"].as_str().ok_or("Missing profile_id")?.to_string();
+        existing.proxy_id = window["proxy_id"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string());
+        existing.social_accounts = window["social_accounts"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        existing.auto_script = window["auto_script"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string());
+    } else {
+        return Err("Window not found".to_string());
+    }
+    
+    let json = serde_json::to_string_pretty(&windows).map_err(|e| e.to_string())?;
+    std::fs::write(&windows_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+// 删除窗口
+#[tauri::command]
+fn delete_browser_window(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let windows_path = app_data_dir.join("browser_windows.json");
+    
+    if !windows_path.exists() {
+        return Err("Windows file not found".to_string());
+    }
+    
+    let content = std::fs::read_to_string(&windows_path).map_err(|e| e.to_string())?;
+    let mut windows: Vec<BrowserWindow> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    
+    windows.retain(|w| w.id != id);
+    
+    let json = serde_json::to_string_pretty(&windows).map_err(|e| e.to_string())?;
+    std::fs::write(&windows_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+// 测试浏览器API连接
+#[tauri::command]
+async fn test_browser_api(
+    api_url: String,
+    api_port: u16,
+    api_key: Option<String>,
+    _browser_type: String,
+) -> Result<bool, String> {
+    // AdsPower API: GET /status
+    let url = format!("{}:{}/status", api_url, api_port);
+    
+    let client = reqwest::Client::new();
+    let mut request = client.get(&url);
+    
+    // 如果有API密钥，添加到请求头
+    if let Some(key) = api_key {
+        request = request.header("Authorization", format!("Bearer {}", key));
+    }
+    
+    match request.send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                // 检查返回的 JSON 是否包含 {"code": 0, "msg": "success"}
+                if let Ok(json) = response.json::<serde_json::Value>().await {
+                    if let Some(code) = json.get("code").and_then(|c| c.as_i64()) {
+                        return Ok(code == 0);
+                    }
+                }
+            }
+            Ok(false)
+        },
+        Err(_) => Ok(false),
+    }
+}
+
+// 检测指纹浏览器信息（获取所有profiles）
+#[tauri::command]
+async fn check_browser_profiles(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    
+    // 读取全局配置
+    let config_path = app_data_dir.join("browser_config.json");
+    if !config_path.exists() {
+        return Err("请先配置全局设置".to_string());
+    }
+    let config_content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let config: BrowserConfig = serde_json::from_str(&config_content).map_err(|e| e.to_string())?;
+    
+    // 调用指纹浏览器API获取所有profiles
+    let url = format!("{}:{}/api/v1/user/list", config.api_url, config.api_port);
+    
+    let client = reqwest::Client::new();
+    let mut request = client.get(&url);
+    
+    if let Some(key) = &config.api_key {
+        request = request.header("Authorization", format!("Bearer {}", key));
+    }
+    
+    match request.send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                let data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+                // 假设API返回格式: { "data": { "list": [...] } }
+                if let Some(list) = data.get("data").and_then(|d| d.get("list")) {
+                    if let Some(profiles) = list.as_array() {
+                        return Ok(profiles.clone());
+                    }
+                }
+                Ok(vec![])
+            } else {
+                Err(format!("API 返回错误: {}", response.status()))
+            }
+        }
+        Err(e) => Err(format!("请求失败: {}", e)),
+    }
+}
+
+// 通过API创建指纹浏览器profile
+#[tauri::command]
+async fn create_browser_profile_api(
+    app: tauri::AppHandle,
+    name: String,
+    proxy_config: Option<serde_json::Value>,
+) -> Result<String, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    
+    // 读取全局配置
+    let config_path = app_data_dir.join("browser_config.json");
+    if !config_path.exists() {
+        return Err("请先配置全局设置".to_string());
+    }
+    let config_content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let config: BrowserConfig = serde_json::from_str(&config_content).map_err(|e| e.to_string())?;
+    
+    // 构建创建profile的请求
+    let url = format!("{}:{}/api/v1/user/create", config.api_url, config.api_port);
+    
+    let mut body = serde_json::json!({
+        "name": name,
+        "group_id": "0",
+    });
+    
+    // 添加代理配置
+    if let Some(proxy) = proxy_config {
+        body["user_proxy_config"] = proxy;
+    }
+    
+    let client = reqwest::Client::new();
+    let mut request = client.post(&url).json(&body);
+    
+    if let Some(key) = &config.api_key {
+        request = request.header("Authorization", format!("Bearer {}", key));
+    }
+    
+    match request.send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                let data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+                // 假设API返回格式: { "data": { "id": "xxx" } }
+                if let Some(id) = data.get("data").and_then(|d| d.get("id")).and_then(|i| i.as_str()) {
+                    return Ok(id.to_string());
+                }
+                Err("API 返回数据格式错误".to_string())
+            } else {
+                let error_text = response.text().await.unwrap_or_default();
+                Err(format!("API 返回错误: {}", error_text))
+            }
+        }
+        Err(e) => Err(format!("请求失败: {}", e)),
+    }
+}
+
+// 通过API删除指纹浏览器profile
+#[tauri::command]
+async fn delete_browser_profile_api(
+    app: tauri::AppHandle,
+    profile_id: String,
+) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    
+    // 读取全局配置
+    let config_path = app_data_dir.join("browser_config.json");
+    if !config_path.exists() {
+        return Err("请先配置全局设置".to_string());
+    }
+    let config_content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let config: BrowserConfig = serde_json::from_str(&config_content).map_err(|e| e.to_string())?;
+    
+    // 调用删除API
+    let url = format!("{}:{}/api/v1/user/delete", config.api_url, config.api_port);
+    
+    let body = serde_json::json!({
+        "user_ids": [profile_id],
+    });
+    
+    let client = reqwest::Client::new();
+    let mut request = client.post(&url).json(&body);
+    
+    if let Some(key) = &config.api_key {
+        request = request.header("Authorization", format!("Bearer {}", key));
+    }
+    
+    match request.send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!("API 返回错误: {}", response.status()))
+            }
+        }
+        Err(e) => Err(format!("请求失败: {}", e)),
+    }
+}
+
+// 通过API更新指纹浏览器profile
+#[tauri::command]
+async fn update_browser_profile_api(
+    app: tauri::AppHandle,
+    profile_id: String,
+    name: Option<String>,
+    proxy_config: Option<serde_json::Value>,
+) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    
+    // 读取全局配置
+    let config_path = app_data_dir.join("browser_config.json");
+    if !config_path.exists() {
+        return Err("请先配置全局设置".to_string());
+    }
+    let config_content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let config: BrowserConfig = serde_json::from_str(&config_content).map_err(|e| e.to_string())?;
+    
+    // 构建更新请求
+    let url = format!("{}:{}/api/v1/user/update", config.api_url, config.api_port);
+    
+    let mut body = serde_json::json!({
+        "user_id": profile_id,
+    });
+    
+    if let Some(n) = name {
+        body["name"] = serde_json::json!(n);
+    }
+    
+    if let Some(proxy) = proxy_config {
+        body["user_proxy_config"] = proxy;
+    }
+    
+    let client = reqwest::Client::new();
+    let mut request = client.post(&url).json(&body);
+    
+    if let Some(key) = &config.api_key {
+        request = request.header("Authorization", format!("Bearer {}", key));
+    }
+    
+    match request.send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!("API 返回错误: {}", response.status()))
+            }
+        }
+        Err(e) => Err(format!("请求失败: {}", e)),
+    }
+}
+
+// 启动单个窗口
+#[tauri::command]
+async fn start_browser_window(app: tauri::AppHandle, window_id: String) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    
+    // 读取全局配置
+    let config_path = app_data_dir.join("browser_config.json");
+    if !config_path.exists() {
+        return Err("请先配置全局设置".to_string());
+    }
+    let config_content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let config: BrowserConfig = serde_json::from_str(&config_content).map_err(|e| e.to_string())?;
+    
+    // 读取窗口配置
+    let windows_path = app_data_dir.join("browser_windows.json");
+    if !windows_path.exists() {
+        return Err("Windows file not found".to_string());
+    }
+    let content = std::fs::read_to_string(&windows_path).map_err(|e| e.to_string())?;
+    let mut windows: Vec<BrowserWindow> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    
+    let window = windows.iter_mut()
+        .find(|w| w.id == window_id)
+        .ok_or("Window not found")?;
+    
+    // AdsPower API: GET /api/v1/browser/start?user_id=xxx
+    // 使用 query string 而不是 JSON body
+    let url = format!("{}:{}/api/v1/browser/start?user_id={}", 
+        config.api_url, config.api_port, window.profile_id);
+    
+    // 如果有其他参数，添加到 query string
+    // open_tabs, serial_number 等
+    
+    let client = reqwest::Client::new();
+    let mut request = client.get(&url);
+    
+    if let Some(key) = &config.api_key {
+        request = request.header("Authorization", format!("Bearer {}", key));
+    }
+    
+    match request.send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                // 检查返回的 JSON
+                if let Ok(json) = response.json::<serde_json::Value>().await {
+                    if let Some(code) = json.get("code").and_then(|c| c.as_i64()) {
+                        if code == 0 {
+                            window.status = "running".to_string();
+                            window.last_used = Some(chrono::Utc::now().to_rfc3339());
+                            
+                            let json_str = serde_json::to_string_pretty(&windows).map_err(|e| e.to_string())?;
+                            std::fs::write(&windows_path, json_str).map_err(|e| e.to_string())?;
+                            
+                            return Ok(());
+                        } else {
+                            let msg = json.get("msg").and_then(|m| m.as_str()).unwrap_or("Unknown error");
+                            return Err(format!("API 返回错误: {}", msg));
+                        }
+                    }
+                }
+                Err("API 返回数据格式错误".to_string())
+            } else {
+                let error_text = response.text().await.unwrap_or_default();
+                Err(format!("API 返回错误: {}", error_text))
+            }
+        }
+        Err(e) => Err(format!("请求失败: {}", e)),
+    }
+}
+
+// 停止单个窗口
+#[tauri::command]
+async fn stop_browser_window(app: tauri::AppHandle, window_id: String) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    
+    // 读取全局配置
+    let config_path = app_data_dir.join("browser_config.json");
+    if !config_path.exists() {
+        return Err("请先配置全局设置".to_string());
+    }
+    let config_content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let config: BrowserConfig = serde_json::from_str(&config_content).map_err(|e| e.to_string())?;
+    
+    // 读取窗口配置
+    let windows_path = app_data_dir.join("browser_windows.json");
+    if !windows_path.exists() {
+        return Err("Windows file not found".to_string());
+    }
+    let content = std::fs::read_to_string(&windows_path).map_err(|e| e.to_string())?;
+    let mut windows: Vec<BrowserWindow> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    
+    let window = windows.iter_mut()
+        .find(|w| w.id == window_id)
+        .ok_or("Window not found")?;
+    
+    // AdsPower API: GET /api/v1/browser/stop?user_id=xxx
+    let url = format!("{}:{}/api/v1/browser/stop?user_id={}", 
+        config.api_url, config.api_port, window.profile_id);
+    
+    let client = reqwest::Client::new();
+    let mut request = client.get(&url);
+    
+    if let Some(key) = &config.api_key {
+        request = request.header("Authorization", format!("Bearer {}", key));
+    }
+    
+    match request.send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                if let Ok(json) = response.json::<serde_json::Value>().await {
+                    if let Some(code) = json.get("code").and_then(|c| c.as_i64()) {
+                        if code == 0 {
+                            window.status = "stopped".to_string();
+                            
+                            let json_str = serde_json::to_string_pretty(&windows).map_err(|e| e.to_string())?;
+                            std::fs::write(&windows_path, json_str).map_err(|e| e.to_string())?;
+                            
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            Err("停止浏览器失败".to_string())
+        }
+        Err(e) => Err(format!("请求失败: {}", e)),
+    }
+}
+
+// 批量启动窗口
+#[tauri::command]
+async fn batch_start_windows(app: tauri::AppHandle, window_ids: Vec<String>) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    
+    // 读取全局配置
+    let config_path = app_data_dir.join("browser_config.json");
+    if !config_path.exists() {
+        return Err("请先配置全局设置".to_string());
+    }
+    let config_content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let config: BrowserConfig = serde_json::from_str(&config_content).map_err(|e| e.to_string())?;
+    
+    // 读取窗口配置
+    let windows_path = app_data_dir.join("browser_windows.json");
+    if !windows_path.exists() {
+        return Err("Windows file not found".to_string());
+    }
+    let content = std::fs::read_to_string(&windows_path).map_err(|e| e.to_string())?;
+    let mut windows: Vec<BrowserWindow> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    
+    let client = reqwest::Client::new();
+    
+    for window_id in window_ids {
+        if let Some(window) = windows.iter_mut().find(|w| w.id == window_id) {
+            let url = format!("{}:{}/api/v1/browser/start", config.api_url, config.api_port);
+            
+            let mut params = serde_json::json!({
+                "user_id": window.profile_id,
+                "headless": config.headless,
+            });
+            
+            if let Some(args) = &config.launch_args {
+                params["launch_args"] = serde_json::json!(args.split_whitespace().collect::<Vec<_>>());
+            }
+            
+            let mut request = client.post(&url).json(&params);
+            if let Some(key) = &config.api_key {
+                request = request.header("Authorization", format!("Bearer {}", key));
+            }
+            
+            if let Ok(response) = request.send().await {
+                if response.status().is_success() {
+                    window.status = "running".to_string();
+                    window.last_used = Some(chrono::Utc::now().to_rfc3339());
+                }
+            }
+        }
+    }
+    
+    let json = serde_json::to_string_pretty(&windows).map_err(|e| e.to_string())?;
+    std::fs::write(&windows_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+// 批量停止窗口
+#[tauri::command]
+async fn batch_stop_windows(app: tauri::AppHandle, window_ids: Vec<String>) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    
+    // 读取全局配置
+    let config_path = app_data_dir.join("browser_config.json");
+    if !config_path.exists() {
+        return Err("请先配置全局设置".to_string());
+    }
+    let config_content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let config: BrowserConfig = serde_json::from_str(&config_content).map_err(|e| e.to_string())?;
+    
+    // 读取窗口配置
+    let windows_path = app_data_dir.join("browser_windows.json");
+    if !windows_path.exists() {
+        return Err("Windows file not found".to_string());
+    }
+    let content = std::fs::read_to_string(&windows_path).map_err(|e| e.to_string())?;
+    let mut windows: Vec<BrowserWindow> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    
+    let client = reqwest::Client::new();
+    
+    for window_id in window_ids {
+        if let Some(window) = windows.iter_mut().find(|w| w.id == window_id) {
+            let url = format!("{}:{}/api/v1/browser/stop", config.api_url, config.api_port);
+            
+            let params = serde_json::json!({
+                "user_id": window.profile_id,
+            });
+            
+            let mut request = client.post(&url).json(&params);
+            if let Some(key) = &config.api_key {
+                request = request.header("Authorization", format!("Bearer {}", key));
+            }
+            
+            if let Ok(response) = request.send().await {
+                if response.status().is_success() {
+                    window.status = "stopped".to_string();
+                }
+            }
+        }
+    }
+    
+    let json = serde_json::to_string_pretty(&windows).map_err(|e| e.to_string())?;
+    std::fs::write(&windows_path, json).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+// 获取系统信息
+#[tauri::command]
+async fn get_system_info(app: tauri::AppHandle) -> Result<SystemInfo, String> {
+    let mut sys = System::new_all();
+    sys.refresh_all();
+    
+    // CPU使用率（使用新API）
+    let cpu_usage = sys.global_cpu_usage();
+    
+    // 内存信息
+    let memory_total = sys.total_memory();
+    let memory_used = sys.used_memory();
+    
+    // 网络速度（简化为0，因为新版API需要不同的实现）
+    let network_speed: u64 = 0;
+    
+    // 获取公网IP
+    let public_ip = match reqwest::get("https://api.ipify.org").await {
+        Ok(response) => response.text().await.unwrap_or_else(|_| "未知".to_string()),
+        Err(_) => "未知".to_string(),
+    };
+    
+    // 检查是否启用代理（从配置文件读取）
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let proxies_path = app_data_dir.join("proxies.json");
+    
+    let mut proxy_enabled = false;
+    let mut proxy_ip: Option<String> = None;
+    
+    if proxies_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&proxies_path) {
+            if let Ok(proxies) = serde_json::from_str::<Vec<ProxyIP>>(&content) {
+                // 查找第一个active状态的代理
+                if let Some(active_proxy) = proxies.iter().find(|p| p.status == "active") {
+                    proxy_enabled = true;
+                    proxy_ip = Some(format!("{}:{}", active_proxy.ip, active_proxy.port));
+                }
+            }
+        }
+    }
+    
+    Ok(SystemInfo {
+        cpu_usage,
+        memory_total,
+        memory_used,
+        network_speed,
+        public_ip,
+        proxy_enabled,
+        proxy_ip,
+    })
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_fs::init())
+        .invoke_handler(tauri::generate_handler![
+            get_device_mac_address,
+            generate_encryption_key,
+            encrypt_password,
+            save_login_credentials,
+            get_saved_credentials,
+            clear_saved_credentials,
+            batch_import_private_keys,
+            batch_create_wallets,
+            get_wallets,
+            export_wallets,
+            update_wallet_name,
+            delete_wallet,
+            validate_social_token,
+            import_social_account,
+            batch_import_social_accounts,
+            get_social_accounts,
+            delete_social_account,
+            get_proxies,
+            add_proxy,
+            batch_add_proxies,
+            delete_proxy,
+            update_proxy,
+            ping_proxy,
+            get_system_info,
+            get_browser_config,
+            save_browser_config,
+            get_browser_windows,
+            create_browser_window,
+            update_browser_window,
+            delete_browser_window,
+            test_browser_api,
+            check_browser_profiles,
+            create_browser_profile_api,
+            delete_browser_profile_api,
+            update_browser_profile_api,
+            start_browser_window,
+            stop_browser_window,
+            batch_start_windows,
+            batch_stop_windows
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

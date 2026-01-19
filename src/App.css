@@ -115,4 +115,10 @@
     height: 100vh;
     overflow: hidden;
   }
+  /* 私钥隐藏样式 */
+  .text-security-disc {
+    -webkit-text-security: disc;
+    text-security: disc;
+    white-space: pre-wrap !important;
+  }
 }

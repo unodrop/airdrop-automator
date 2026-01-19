@@ -1,0 +1,172 @@
+import { useState } from 'react';
+import {
+  Network,
+  ExternalLink,
+  Settings2,
+  Plus,
+  Play,
+  Pause
+} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { useTranslation } from '../i18n/I18nContext';
+import { Button } from '@/components/ui/button';
+
+interface DePINProject {
+  id: string;
+  name: string;
+  logo: string;
+  description: string;
+  status: 'active' | 'inactive';
+  website: string;
+  category: string;
+}
+
+export function DePINPage() {
+  const t = useTranslation();
+  const navigate = useNavigate();
+
+  // DePIN 项目列表
+  const [projects] = useState<DePINProject[]>([
+    {
+      id: '7',
+      name: 'Pharos Testnet',
+      logo: '💡',
+      description: '去中心化网络基础设施测试网络，参与测试赚取奖励',
+      status: 'inactive',
+      website: 'https://pharos.xyz',
+      category: '网络资源'
+    }
+  ]);
+
+  const handleToggleProject = (projectId: string) => {
+    console.log('Toggle project:', projectId);
+    if (projectId === '7') { // Pharos
+        navigate('/depin/pharos');
+        return;
+    }
+    // TODO: 实现启动/停止项目逻辑
+  };
+
+  const handleConfigProject = (projectId: string) => {
+    console.log('Config project:', projectId);
+    // TODO: 实现配置项目逻辑
+  };
+
+  const handleOpenWebsite = (website: string) => {
+    window.open(website, '_blank');
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="p-6 space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+              <Network className="w-7 h-7 text-primary" />
+              DePIN 网络
+            </h1>
+            <p className="text-sm text-gray-400 mt-1">
+              去中心化物理基础设施网络项目管理
+            </p>
+          </div>
+        </div>
+
+        {/* Projects Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {projects.map((project) => (
+            <div
+              key={project.id}
+              className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-xl p-5 hover:bg-white/8 transition-all duration-200 cursor-pointer group"
+            >
+              {/* Project Header */}
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="text-3xl">{project.logo}</div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-white group-hover:text-primary transition-colors">
+                      {project.name}
+                    </h3>
+                    <span className="text-xs text-gray-500">{project.category}</span>
+                  </div>
+                </div>
+                <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                  project.status === 'active'
+                    ? 'bg-green-500/10 text-green-500'
+                    : 'bg-gray-500/10 text-gray-500'
+                }`}>
+                  {project.status === 'active' ? '运行中' : '未启动'}
+                </span>
+              </div>
+
+              {/* Project Description */}
+              <p className="text-sm text-gray-400 mb-4 line-clamp-2">
+                {project.description}
+              </p>
+
+              {/* Project Actions */}
+              <div className="flex items-center gap-2">
+                {project.status === 'active' ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleToggleProject(project.id)}
+                    className="flex-1 border-red-500/50 text-red-400 hover:bg-red-500/10"
+                  >
+                    <Pause className="w-3.5 h-3.5 mr-1.5" />
+                    停止
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() => handleToggleProject(project.id)}
+                    className="flex-1 bg-primary hover:bg-primary/90 text-white"
+                  >
+                    <Play className="w-3.5 h-3.5 mr-1.5" />
+                    {project.id === '7' ? '打开' : '启动'}
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => handleConfigProject(project.id)}
+                  className="hover:bg-white/10"
+                  title="配置"
+                >
+                  <Settings2 className="w-4 h-4" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => handleOpenWebsite(project.website)}
+                  className="hover:bg-white/10"
+                  title="访问官网"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Empty State - 如果将来支持用户添加项目 */}
+        {projects.length === 0 && (
+          <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-xl p-12 text-center">
+            <Network className="w-16 h-16 text-gray-600 mx-auto mb-4" />
+            <p className="text-gray-400 mb-2">暂无 DePIN 项目</p>
+            <p className="text-sm text-gray-500 mb-6">
+              点击下方按钮添加您的第一个 DePIN 项目
+            </p>
+            <Button
+              variant="outline"
+              className="border-primary/50 text-primary hover:bg-primary/10"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              添加项目
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
