@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Mail, Play, Pause, RefreshCw, Plus, Trash2, CheckCircle2, XCircle, Clock, Activity } from 'lucide-react';
+import { Mail, Play, Pause, Plus, Trash2, CheckCircle2, Clock, Activity } from 'lucide-react';
 import { useTranslation } from '../i18n/I18nContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

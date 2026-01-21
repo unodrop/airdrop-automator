@@ -8,7 +8,6 @@ import {
   Pause
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { useTranslation } from '../i18n/I18nContext';
 import { Button } from '@/components/ui/button';
 
 interface DePINProject {
@@ -22,7 +21,6 @@ interface DePINProject {
 }
 
 export function DePINPage() {
-  const t = useTranslation();
   const navigate = useNavigate();
 
   // DePIN 项目列表
@@ -44,7 +42,6 @@ export function DePINPage() {
         navigate('/depin/pharos');
         return;
     }
-    // TODO: 实现启动/停止项目逻辑
   };
 
   const handleConfigProject = (projectId: string) => {
