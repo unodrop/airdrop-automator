@@ -1,12 +1,11 @@
 use tauri::{Manager, Emitter};
 use super::types::*;
+use super::api::PharosClient;
 use crate::modules::wallet::WalletAccount;
 use crate::modules::wallet::utils::decrypt_private_key;
-use crate::common::http::create_client;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer;
 use serde::Serialize;
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use tokio::sync::Mutex as AsyncMutex;
 use lazy_static::lazy_static;
@@ -215,7 +214,6 @@ async fn execute_single_login(
             format!("Signing failed: {}", e)
         })?;
     
-    // signature needs to be 0x-prefixed hex string
     let signature_str = signature.to_string();
     let signature_param = if signature_str.starts_with("0x") {
         signature_str
@@ -223,43 +221,13 @@ async fn execute_single_login(
         format!("0x{}", signature_str)
     };
     
-    // 3. Send request
+    // 3. Login
     emit_log(app, address, "Sending login request...", "info");
-    let client = create_client(None)?;
-    
-    let url = format!(
-        "https://api.pharosnetwork.xyz/user/login?address={}&signature={}&invite_code={}",
-        address, signature_param, invite_code
-    );
-    
-    let response = client.post(&url)
-        .header("authorization", "Bearer null")
-        .header("sec-ch-ua", "\"Chromium\";v=\"136\", \"Brave\";v=\"136\", \"Not.A/Brand\";v=\"99\"")
-        .header("sec-ch-ua-mobile", "?0")
-        .header("sec-ch-ua-platform", "\"Windows\"")
-        .header("sec-fetch-dest", "empty")
-        .header("sec-fetch-mode", "cors")
-        .header("sec-fetch-site", "same-site")
-        .header("sec-gpc", "1")
-        .header("Referer", "https://testnet.pharosnetwork.xyz/")
-        .header("Referrer-Policy", "strict-origin-when-cross-origin")
-        .send()
-        .await
+    let client = PharosClient::new(address, None)?;
+    let login_res = client.login(&signature_param, invite_code).await
         .map_err(|e| {
-            emit_log(app, address, &format!("Request failed: {}", e), "error");
-            format!("Request failed: {}", e)
-        })?;
-        
-    let response_text = response.text().await
-        .map_err(|e| {
-            emit_log(app, address, &format!("Failed to read response: {}", e), "error");
-            format!("Failed to read response: {}", e)
-        })?;
-        
-    let login_res: PharosLoginResponse = serde_json::from_str(&response_text)
-        .map_err(|e| {
-            emit_log(app, address, &format!("Failed to parse response: {} - Raw: {}", e, response_text), "error");
-            format!("Failed to parse response: {} - Raw: {}", e, response_text)
+            emit_log(app, address, &e, "error");
+            e
         })?;
         
     if login_res.code != 0 {
@@ -275,223 +243,112 @@ async fn execute_single_login(
         if let Some(jwt) = data.jwt {
             emit_log(app, address, "Login successful! JWT obtained.", "success");
             
+            let client = PharosClient::new(address, Some(jwt.clone()))?;
+            
             // 4. Check-in
             emit_log(app, address, "Sending check-in request...", "info");
+            let check_in_res = client.check_in().await;
             
-            let check_in_url = format!("https://api.pharosnetwork.xyz/sign/in?address={}", address);
-            
-            // Common headers
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert("authorization", format!("Bearer {}", jwt).parse().unwrap());
-            headers.insert("sec-ch-ua", "\"Chromium\";v=\"136\", \"Brave\";v=\"136\", \"Not.A/Brand\";v=\"99\"".parse().unwrap());
-            headers.insert("sec-ch-ua-mobile", "?0".parse().unwrap());
-            headers.insert("sec-ch-ua-platform", "\"Windows\"".parse().unwrap());
-            headers.insert("sec-fetch-dest", "empty".parse().unwrap());
-            headers.insert("sec-fetch-mode", "cors".parse().unwrap());
-            headers.insert("sec-fetch-site", "same-site".parse().unwrap());
-            headers.insert("sec-gpc", "1".parse().unwrap());
-            headers.insert("Referer", "https://testnet.pharosnetwork.xyz/".parse().unwrap());
-            headers.insert("Referrer-Policy", "strict-origin-when-cross-origin".parse().unwrap());
-            
-            let check_in_res = client.post(&check_in_url)
-                .headers(headers.clone())
-                .send()
-                .await;
-
             match check_in_res {
-                Ok(response) => {
-                    match response.text().await {
-                        Ok(text) => {
-                            match serde_json::from_str::<PharosBaseResponse>(&text) {
-                                Ok(res) => {
-                                    if res.code == 0 {
-                                        emit_log(app, address, "Check-in successful", "success");
-                                    } else {
-                                        emit_log(app, address, &format!("Check-in failed: {}", res.msg), "error");
-                                    }
-                                },
-                                Err(e) => {
-                                    emit_log(app, address, &format!("Check-in parse error: {}", e), "error");
-                                }
-                            }
-                        },
-                        Err(e) => {
-                            emit_log(app, address, &format!("Check-in read error: {}", e), "error");
-                        }
+                Ok(res) => {
+                    if res.code == 0 {
+                        emit_log(app, address, "Check-in successful", "success");
+                    } else {
+                        emit_log(app, address, &format!("Check-in failed: {}", res.msg), "error");
                     }
                 },
                 Err(e) => {
-                    emit_log(app, address, &format!("Check-in request failed: {}", e), "error");
+                    emit_log(app, address, &format!("Check-in error: {}", e), "error");
                 }
             }
                 
-            // 5. Claim Faucet (Test Tokens)
+            // 5. Claim Faucet
             emit_log(app, address, "Checking faucet status...", "info");
-            let faucet_status_url = format!("https://api.pharosnetwork.xyz/faucet/status?address={}", address);
+            let faucet_status = client.get_faucet_status().await;
             
-            let faucet_status_res = client.get(&faucet_status_url)
-                .headers(headers.clone())
-                .send()
-                .await;
-                
-            match faucet_status_res {
-                Ok(response) => {
-                    match response.text().await {
-                        Ok(text) => {
-                            // Assuming faucet status response has code/msg or data
-                            // Just logging the attempt for now, or we can try to claim if needed.
-                            // The user instruction implies "claim water/test tokens".
-                            // Usually there is a status check and then a claim.
-                            // Let's assume we just need to hit the status endpoint for now as requested, 
-                            // or if the instruction implies actually claiming, we might need a POST to /faucet/claim.
-                            // Based on "再执行一下领水领测试币", it means "Execute claim faucet/test tokens".
-                            // But the code snippet provided was `statusUrl`.
-                            // I will implement the status check as requested by the snippet, and if status implies we can claim, we might need another step.
-                            // For now, I will implement the status check and log the result.
-                            
-                            match serde_json::from_str::<PharosFaucetStatusResponse>(&text) {
-                                Ok(res) => {
-                                    if res.code == 0 {
-                                        if let Some(data) = res.data {
-                                            if data.is_able_to_faucet {
-                                                emit_log(app, address, "Faucet available, claiming...", "info");
-                                                
-                                                let claim_url = format!("https://api.pharosnetwork.xyz/faucet/daily?address={}", address);
-                                                let claim_res = client.post(&claim_url)
-                                                    .headers(headers.clone())
-                                                    .send()
-                                                    .await;
-                                                    
-                                                match claim_res {
-                                                    Ok(claim_response) => {
-                                                        match claim_response.text().await {
-                                                            Ok(claim_text) => {
-                                                                match serde_json::from_str::<PharosBaseResponse>(&claim_text) {
-                                                                    Ok(claim_data) => {
-                                                                        if claim_data.code == 0 {
-                                                                            emit_log(app, address, "Faucet claimed successfully", "success");
-                                                                        } else {
-                                                                            emit_log(app, address, &format!("Faucet claim failed: {}", claim_data.msg), "error");
-                                                                        }
-                                                                    },
-                                                                    Err(_) => {
-                                                                        emit_log(app, address, &format!("Faucet claim response: {}", claim_text), "info");
-                                                                    }
-                                                                }
-                                                            },
-                                                            Err(e) => {
-                                                                emit_log(app, address, &format!("Faucet claim read error: {}", e), "error");
-                                                            }
-                                                        }
-                                                    },
-                                                    Err(e) => {
-                                                        emit_log(app, address, &format!("Faucet claim request failed: {}", e), "error");
-                                                    }
-                                                }
-                                                
-                                            } else {
-                                                emit_log(app, address, "Faucet not available (already claimed?)", "info");
-                                            }
+            match faucet_status {
+                Ok(res) => {
+                    if res.code == 0 {
+                        if let Some(data) = res.data {
+                            if data.is_able_to_faucet {
+                                emit_log(app, address, "Faucet available, claiming...", "info");
+                                let claim_res = client.claim_faucet().await;
+                                
+                                match claim_res {
+                                    Ok(claim_data) => {
+                                        if claim_data.code == 0 {
+                                            emit_log(app, address, "Faucet claimed successfully", "success");
                                         } else {
-                                            emit_log(app, address, "Faucet status no data", "error");
+                                            emit_log(app, address, &format!("Faucet claim failed: {}", claim_data.msg), "error");
                                         }
-                                    } else {
-                                        emit_log(app, address, &format!("Faucet status check failed: {}", res.msg), "error");
+                                    },
+                                    Err(e) => {
+                                        emit_log(app, address, &format!("Faucet claim error: {}", e), "error");
                                     }
-                                },
-                                Err(_) => {
-                                    // Maybe the response structure is different, log raw text for debug
-                                    emit_log(app, address, &format!("Faucet response: {}", text), "info");
                                 }
+                            } else {
+                                emit_log(app, address, "Faucet not available (already claimed?)", "info");
                             }
-                        },
-                        Err(e) => {
-                            emit_log(app, address, &format!("Faucet status read error: {}", e), "error");
+                        } else {
+                            emit_log(app, address, "Faucet status no data", "error");
                         }
+                    } else {
+                        emit_log(app, address, &format!("Faucet status check failed: {}", res.msg), "error");
                     }
                 },
                 Err(e) => {
-                    emit_log(app, address, &format!("Faucet status request failed: {}", e), "error");
+                     emit_log(app, address, &format!("Faucet status error: {}", e), "error");
                 }
             }
-
+            
             // 6. Fetch Profile
             emit_log(app, address, "Fetching user profile...", "info");
-            let profile_url = format!("https://api.pharosnetwork.xyz/user/profile?address={}", address);
+            let profile_res = client.get_profile().await;
             
-            let profile_res = client.get(&profile_url)
-                .headers(headers.clone())
-                .send()
-                .await;
-                
             match profile_res {
-                Ok(response) => {
-                    match response.text().await {
-                        Ok(text) => {
-                            match serde_json::from_str::<PharosProfileResponse>(&text) {
-                                Ok(profile_data) => {
-                                    if profile_data.code == 0 {
-                                        if let Some(data) = profile_data.data {
-                                            if let Some(user_info) = data.user_info {
-                                                let msg = format!("Success! ID: {} | Points: {} | Total: {}", 
-                                                    user_info.id, user_info.task_points, user_info.total_points);
-                                                emit_log(app, address, &msg, "success");
-                                                Ok(PharosTaskResult {
-                                                    success: true,
-                                                    message: msg,
-                                                    jwt: Some(jwt),
-                                                })
-                                            } else {
-                                                emit_log(app, address, "Profile fetched but no user info", "error");
-                                                 Ok(PharosTaskResult {
-                                                    success: true,
-                                                    message: "Profile fetched but no user info".to_string(),
-                                                    jwt: Some(jwt),
-                                                })
-                                            }
-                                        } else {
-                                             emit_log(app, address, "Profile fetched but no data", "error");
-                                             Ok(PharosTaskResult {
-                                                success: true,
-                                                message: "Profile fetched but no data".to_string(),
-                                                jwt: Some(jwt),
-                                            })
-                                        }
-                                    } else {
-                                        let msg = format!("Fetch profile failed: {}", profile_data.msg);
-                                        emit_log(app, address, &msg, "error");
-                                        Ok(PharosTaskResult {
-                                            success: true,
-                                            message: msg,
-                                            jwt: Some(jwt),
-                                        })
-                                    }
-                                },
-                                Err(e) => {
-                                     emit_log(app, address, &format!("Failed to parse profile: {}", e), "error");
-                                     Ok(PharosTaskResult {
-                                        success: true,
-                                        message: "Parse profile error".to_string(),
-                                        jwt: Some(jwt),
-                                    })
-                                }
+                Ok(profile_data) => {
+                    if profile_data.code == 0 {
+                        if let Some(data) = profile_data.data {
+                            if let Some(user_info) = data.user_info {
+                                let msg = format!("Success! ID: {} | Points: {} | Total: {}", 
+                                    user_info.id, user_info.task_points, user_info.total_points);
+                                emit_log(app, address, &msg, "success");
+                                Ok(PharosTaskResult {
+                                    success: true,
+                                    message: msg,
+                                    jwt: Some(jwt),
+                                })
+                            } else {
+                                emit_log(app, address, "Profile fetched but no user info", "error");
+                                 Ok(PharosTaskResult {
+                                    success: true,
+                                    message: "Profile fetched but no user info".to_string(),
+                                    jwt: Some(jwt),
+                                })
                             }
-                        },
-                        Err(e) => {
-                            emit_log(app, address, &format!("Failed to read profile response: {}", e), "error");
+                        } else {
+                             emit_log(app, address, "Profile fetched but no data", "error");
                              Ok(PharosTaskResult {
                                 success: true,
-                                message: "Read profile error".to_string(),
+                                message: "Profile fetched but no data".to_string(),
                                 jwt: Some(jwt),
                             })
                         }
+                    } else {
+                        let msg = format!("Fetch profile failed: {}", profile_data.msg);
+                        emit_log(app, address, &msg, "error");
+                        Ok(PharosTaskResult {
+                            success: true,
+                            message: msg,
+                            jwt: Some(jwt),
+                        })
                     }
                 },
                 Err(e) => {
-                     emit_log(app, address, &format!("Profile request failed: {}", e), "error");
-                     Ok(PharosTaskResult {
+                    emit_log(app, address, &format!("Profile error: {}", e), "error");
+                    Ok(PharosTaskResult {
                         success: true,
-                        message: "Profile request failed".to_string(),
+                        message: format!("Profile error: {}", e),
                         jwt: Some(jwt),
                     })
                 }

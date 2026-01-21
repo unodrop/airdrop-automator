@@ -42,6 +42,9 @@ export function PharosPage() {
   const [inviteCode, setInviteCode] = useState('S6NGMzXSCDBxhnwo');
   const logsEndRef = useRef<HTMLDivElement>(null);
 
+  const processedCount = Object.values(taskStates).filter(t => t.status !== 'pending').length;
+  const totalCount = wallets.length;
+
   useEffect(() => {
     loadWallets();
     syncStatus();
@@ -225,6 +228,12 @@ export function PharosPage() {
                 <Wallet className="w-4 h-4" />
                 <span>{wallets.length} Wallets</span>
             </div>
+            {processedCount > 0 && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground bg-accent/50 px-3 py-1.5 rounded-lg border border-white/5">
+                    <Activity className="w-4 h-4 text-blue-500" />
+                    <span>Processed: {processedCount} / {totalCount}</span>
+                </div>
+            )}
             <Button 
                 onClick={isRunning ? handleStop : handleStart} 
                 disabled={wallets.length === 0}
