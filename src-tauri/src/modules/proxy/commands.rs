@@ -1,5 +1,4 @@
 use super::types::*;
-use std::fs;
 use tauri::Manager;
 
 #[tauri::command]

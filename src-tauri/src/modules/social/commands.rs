@@ -1,6 +1,5 @@
 use super::types::*;
 use crate::modules::wallet::{ValidationResult, encrypt_data as encrypt_private_key};
-use std::fs;
 use tauri::Manager;
 
 #[tauri::command]
