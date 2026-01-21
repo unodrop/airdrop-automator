@@ -33,10 +33,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 'lts/*'
-          cache: 'npm'
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
 
       - name: Install frontend dependencies
-        run: npm install
+        run: bun install
 
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
