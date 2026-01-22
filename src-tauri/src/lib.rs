@@ -97,10 +97,10 @@ pub fn run() {
             system::copy_to_clipboard,
 
             // ========== Pharos 模块 ==========
-            modules::depin::pharos::execute_pharos_login,
-            modules::depin::pharos::start_pharos_tasks,
-            modules::depin::pharos::stop_pharos_tasks,
-            modules::depin::pharos::get_pharos_status,
+            modules::scripts::pharos::execute_pharos_login,
+            modules::scripts::pharos::start_pharos_tasks,
+            modules::scripts::pharos::stop_pharos_tasks,
+            modules::scripts::pharos::get_pharos_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
