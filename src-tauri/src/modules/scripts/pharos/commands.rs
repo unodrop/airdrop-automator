@@ -132,15 +132,8 @@ async fn run_pharos_tasks(app: tauri::AppHandle, invite_code: &str) -> Result<()
         return Ok(());
     }
 
-    // Shuffle wallets for random execution order
-    let mut shuffled_wallets = wallets.clone();
-    {
-        let mut rng = rand::thread_rng();
-        shuffled_wallets.shuffle(&mut rng);
-    }
-
-    // 2. Iterate wallets
-    for wallet in shuffled_wallets {
+    // Iterate wallets in order (no shuffle)
+    for wallet in wallets {
         // Check for stop signal
         {
             let state = PHAROS_STATE.lock().await;
@@ -470,10 +463,10 @@ async fn process_pharos_chain_tasks(
     }
 
     // 3. Swap Token (WPHRS -> USDC/USDT)
-    swap_token(app, &provider, address, _jwt.as_deref()).await?;
+    // swap_token(app, &provider, address, _jwt.as_deref()).await?;
 
     // 4. Add Liquidity
-    add_liquidity(app, &provider, address, _jwt.as_deref()).await?;
+    // add_liquidity(app, &provider, address, _jwt.as_deref()).await?;
 
     Ok(())
 }
