@@ -3,8 +3,9 @@ import { BrowserRouter, Routes, Route, Navigate, Outlet } from "react-router-dom
 import { Layout } from "./components/Layout";
 import { AccountsLayout } from "./components/AccountsLayout";
 import { RegistratorLayout } from "./components/RegistratorLayout";
-import { DePINPage } from "./pages/DePINPage";
+import { ScriptPage } from "./pages/ScriptPage";
 import { PharosPage } from "./pages/PharosPage";
+import { GalxePage } from "./pages/GalxePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { SidebarProvider } from "@/components/ui/sidebar";
@@ -39,8 +40,9 @@ function AppRoutes() {
         <Route path="/" element={<Navigate to="/accounts" replace />} />
         <Route path="/accounts" element={<AccountsLayout />} />
         <Route path="/registrator" element={<RegistratorLayout />} />
-        <Route path="/depin" element={<DePINPage />} />
-        <Route path="/depin/pharos" element={<PharosPage />} />
+        <Route path="/scripts" element={<ScriptPage />} />
+        <Route path="/scripts/pharos" element={<PharosPage />} />
+        <Route path="/galxe" element={<GalxePage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
     </Routes>

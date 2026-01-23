@@ -46,7 +46,7 @@ t('common.confirm')     // 确认 / Confirm
 ```typescript
 t('sidebar.accounts')   // 账号管理 / Accounts
 t('sidebar.registrator')// 注册机 / Account Generator
-t('sidebar.depin')      // DePIN 网络 / DePIN Network
+t('sidebar.scripts')      // 脚本 / Scripts
 t('sidebar.settings')   // 系统设置 / Settings
 t('sidebar.logout')     // 退出登录 / Logout
 ```

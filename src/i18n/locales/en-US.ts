@@ -41,7 +41,7 @@ export default {
   sidebar: {
     accounts: 'Accounts',
     registrator: 'Account Generator',
-    depin: 'DePIN Network',
+    scripts: 'Scripts',
     maintenance: 'Maintenance',
     settings: 'Settings',
     adminUser: 'Admin User',
@@ -295,4 +295,5 @@ export default {
     lastSynced: 'Last synced',
     justNow: 'Just now',
   },
+
 };

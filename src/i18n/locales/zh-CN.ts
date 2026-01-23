@@ -41,7 +41,7 @@ export default {
   sidebar: {
     accounts: '账号管理',
     registrator: '注册机',
-    depin: 'DePIN 网络',
+    scripts: '脚本',
     maintenance: '维护',
     settings: '系统设置',
     adminUser: '管理员用户',
@@ -295,4 +295,6 @@ export default {
     lastSynced: '最后同步',
     justNow: '刚刚',
   },
+
+
 };

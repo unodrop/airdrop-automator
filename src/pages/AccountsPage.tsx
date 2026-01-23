@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { save } from '@tauri-apps/plugin-dialog';
+import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { Search, Key, MoreVertical, Edit, Trash2, Copy, AlertCircle, RefreshCw, Plus, Loader2, Download, KeyRound, Upload } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -186,19 +188,24 @@ export function AccountsPage() {
       // 创建 JSON 内容
       const jsonContent = JSON.stringify(exportedWallets, null, 2);
       
-      // 创建 Blob 并下载
-      const blob = new Blob([jsonContent], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `wallets_${new Date().toISOString().split('T')[0]}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      // 打开保存对话框
+      const filePath = await save({
+        filters: [{
+          name: 'JSON',
+          extensions: ['json']
+        }],
+        defaultPath: `wallets_${new Date().toISOString().split('T')[0]}.json`
+      });
+
+      if (!filePath) {
+        return; // 用户取消
+      }
+
+      // 写入文件
+      await writeTextFile(filePath, jsonContent);
 
       toast.success('导出成功', {
-        description: `已导出 ${exportedWallets.length} 个钱包`,
+        description: `已导出 ${exportedWallets.length} 个钱包到文件`,
       });
     } catch (error) {
       console.error('Export failed:', error);

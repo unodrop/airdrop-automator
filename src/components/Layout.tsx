@@ -2,14 +2,16 @@ import { useState, useEffect } from 'react';
 import { 
   Wallet, 
   Settings, 
-  Network, 
   LogOut,
   Shield,
   Activity,
   HardDrive,
   UserPlus,
   LayoutDashboard,
-  CircleDot
+  CircleDot,
+  Terminal,
+  Zap,
+  Cpu
 } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -114,7 +116,8 @@ export function Layout({ children }: LayoutProps) {
   const navItems: NavItem[] = [
     { name: t('sidebar.accounts'), icon: Wallet, path: 'accounts' },
     { name: t('sidebar.registrator'), icon: UserPlus, path: 'registrator', disabled: true },
-    { name: t('sidebar.depin'), icon: Network, path: 'depin' },
+    { name: t('sidebar.scripts'), icon: Terminal, path: 'scripts' },
+    { name: "Galxe", icon: Zap, path: 'galxe', disabled: true },
   ];
 
   const maintenanceItems: NavItem[] = [
@@ -152,13 +155,13 @@ export function Layout({ children }: LayoutProps) {
                   <SidebarMenuItem key={item.path}>
                     <SidebarMenuButton 
                       onClick={() => !item.disabled && handleNavigation(item.path)}
-                      isActive={currentPath === item.path || (currentPath === 'pharos' && item.path === 'depin')}
+                      isActive={currentPath === item.path || currentPath.startsWith(`${item.path}/`)}
                       tooltip={item.name}
                       disabled={item.disabled}
                       className={
                         item.disabled 
                           ? 'opacity-40 cursor-not-allowed' 
-                          : (currentPath === item.path || (currentPath === 'pharos' && item.path === 'depin'))
+                          : (currentPath === item.path || currentPath.startsWith(`${item.path}/`))
                             ? 'bg-primary/10 text-primary font-medium' 
                             : ''
                       }

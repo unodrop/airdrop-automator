@@ -1,16 +1,16 @@
 import { useState } from 'react';
 import {
-  Network,
   ExternalLink,
   Settings2,
   Plus,
   Play,
-  Pause
+  Pause,
+  Terminal
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 
-interface DePINProject {
+interface ScriptProject {
   id: string;
   name: string;
   logo: string;
@@ -20,28 +20,37 @@ interface DePINProject {
   category: string;
 }
 
-export function DePINPage() {
+export function ScriptPage() {
   const navigate = useNavigate();
 
-  // DePIN 项目列表
-  const [projects] = useState<DePINProject[]>([
+  // 脚本项目列表
+  const [projects] = useState<ScriptProject[]>([
     {
-      id: '7',
+      id: 'pharos',
       name: 'Pharos Testnet',
       logo: '💡',
-      description: '去中心化网络基础设施测试网络，参与测试赚取奖励',
+      description: '自动化执行 Pharos 测试网任务',
       status: 'inactive',
       website: 'https://pharos.xyz',
-      category: '网络资源'
-    }
+      category: '自动化脚本'
+    },
+    // {
+    //   id: 'yom',
+    //   name: 'YOM',
+    //   logo: '🪙',
+    //   description: '自动化执行 YOM 相关任务',
+    //   status: 'inactive',
+    //   website: 'https://yom.io',
+    //   category: '自动化脚本'
+    // }
   ]);
 
   const handleToggleProject = (projectId: string) => {
-    console.log('Toggle project:', projectId);
-    if (projectId === '7') { // Pharos
-        navigate('/depin/pharos');
-        return;
+    if (projectId === 'pharos') {
+      navigate('/scripts/pharos');
+      return;
     }
+    console.log('Toggle project:', projectId);
   };
 
   const handleConfigProject = (projectId: string) => {
@@ -60,11 +69,11 @@ export function DePINPage() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-              <Network className="w-7 h-7 text-primary" />
-              DePIN 网络
+              <Terminal className="w-7 h-7 text-primary" />
+              脚本
             </h1>
             <p className="text-sm text-gray-400 mt-1">
-              去中心化物理基础设施网络项目管理
+              自动化脚本任务管理
             </p>
           </div>
         </div>
@@ -120,7 +129,7 @@ export function DePINPage() {
                     className="flex-1 bg-primary hover:bg-primary/90 text-white"
                   >
                     <Play className="w-3.5 h-3.5 mr-1.5" />
-                    {project.id === '7' ? '打开' : '启动'}
+                    {project.id === 'pharos' ? '打开' : '启动'}
                   </Button>
                 )}
                 <Button
@@ -149,10 +158,10 @@ export function DePINPage() {
         {/* Empty State - 如果将来支持用户添加项目 */}
         {projects.length === 0 && (
           <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-xl p-12 text-center">
-            <Network className="w-16 h-16 text-gray-600 mx-auto mb-4" />
-            <p className="text-gray-400 mb-2">暂无 DePIN 项目</p>
+            <Terminal className="w-16 h-16 text-gray-600 mx-auto mb-4" />
+            <p className="text-gray-400 mb-2">暂无脚本</p>
             <p className="text-sm text-gray-500 mb-6">
-              点击下方按钮添加您的第一个 DePIN 项目
+              点击下方按钮添加您的第一个脚本
             </p>
             <Button
               variant="outline"
