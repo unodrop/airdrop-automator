@@ -3,11 +3,11 @@ import { BrowserRouter, Routes, Route, Navigate, Outlet } from "react-router-dom
 import { Layout } from "./components/Layout";
 import { AccountsLayout } from "./components/AccountsLayout";
 import { RegistratorLayout } from "./components/RegistratorLayout";
-import { ScriptPage } from "./pages/ScriptPage";
-import { PharosPage } from "./pages/PharosPage";
-import { GalxePage } from "./pages/GalxePage";
+import { ScriptPage } from "./pages/scripts";
+import { PharosPage } from "./pages/scripts/PharosPage";
+import { GalxePage } from "./pages/galxe";
 import { SettingsPage } from "./pages/SettingsPage";
-import { LoginPage } from "./pages/LoginPage";
+import { LoginPage } from "./pages/auth/LoginPage";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { I18nProvider } from "./i18n/I18nContext";

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Mail, Boxes } from 'lucide-react';
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { Separator } from '@/components/ui/separator';
-import { EmailRegistratorPage } from '@/pages/EmailRegistratorPage';
+import { EmailRegistratorPage } from '@/pages/auth/EmailRegistratorPage';
 import { OtherRegistratorPage } from '@/pages/OtherRegistratorPage';
 import { useTranslation } from '../i18n/I18nContext';
 

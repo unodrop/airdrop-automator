@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { Wallet, Users, Globe } from 'lucide-react';
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { Separator } from '@/components/ui/separator';
-import { AccountsPage } from '@/pages/AccountsPage';
-import { SocialAccountsPage } from '@/pages/SocialAccountsPage';
+import { AccountsPage } from '@/pages/account/AccountsPage';
+import { SocialAccountsPage } from '@/pages/account/SocialAccountsPage';
 import { ProxyPage } from '@/pages/ProxyPage';
 
 interface TabItem {
